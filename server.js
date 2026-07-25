@@ -133,6 +133,7 @@ async function initDB() {
   await q(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION`);
   await q(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS geo_fuente TEXT`);
   await q(`CREATE TABLE IF NOT EXISTS geo_cache (clave TEXT PRIMARY KEY, lat DOUBLE PRECISION, lng DOUBLE PRECISION, creado TIMESTAMPTZ DEFAULT now())`);
+  await q(`ALTER TABLE gestiones ADD COLUMN IF NOT EXISTS monto_cobrado NUMERIC`);
 }
 
 // Siembra usuarios: supervisor + una cuenta por cada zona que exista en clientes.
@@ -382,7 +383,7 @@ app.get('/api/cliente/:contrato', auth, async (req, res) => {
 app.post('/api/gestion', auth, async (req, res) => {
   const client = await pool.connect();
   try {
-    const { contrato, resultado, notas, monto_prometido, fecha_promesa, lat, lng, fotos } = req.body || {};
+    const { contrato, resultado, notas, monto_prometido, monto_cobrado, fecha_promesa, lat, lng, fotos } = req.body || {};
     if (!contrato || !resultado) return res.status(400).json({ error: 'contrato y resultado obligatorios' });
     const c = await client.query('SELECT zona,semana FROM clientes WHERE contrato=$1', [contrato]);
     if (!c.rowCount) return res.status(404).json({ error: 'cliente no existe' });
@@ -391,9 +392,9 @@ app.post('/api/gestion', auth, async (req, res) => {
 
     await client.query('BEGIN');
     const g = await client.query(`
-      INSERT INTO gestiones (contrato,usuario,zona,resultado,notas,monto_prometido,fecha_promesa,lat,lng,semana)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-      [contrato, req.user.usuario, c.rows[0].zona, resultado, txt(notas), num(monto_prometido),
+      INSERT INTO gestiones (contrato,usuario,zona,resultado,notas,monto_prometido,monto_cobrado,fecha_promesa,lat,lng,semana)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+      [contrato, req.user.usuario, c.rows[0].zona, resultado, txt(notas), num(monto_prometido), num(monto_cobrado),
        fecha_promesa || null, lat != null ? Number(lat) : null, lng != null ? Number(lng) : null,
        c.rows[0].semana]);
     const gid = g.rows[0].id;
@@ -570,7 +571,7 @@ app.get('/api/exportar', auth, soloSuper, async (req, res) => {
     const r = await q(`
       SELECT g.creado, g.zona, g.usuario, c.contrato, c.no_cliente, c.nombre, c.grado,
              c.saldo, c.exigible, c.atraso, c.domicilio, c.tel1, c.tel2,
-             g.resultado, g.notas, g.monto_prometido, g.fecha_promesa, g.lat, g.lng,
+             g.resultado, g.notas, g.monto_cobrado, g.monto_prometido, g.fecha_promesa, g.lat, g.lng,
              (SELECT COUNT(*) FROM gestion_foto f WHERE f.gestion_id=g.id) AS fotos
       FROM gestiones g JOIN clientes c ON c.contrato=g.contrato
       ORDER BY g.creado DESC`);
@@ -578,7 +579,7 @@ app.get('/api/exportar', auth, soloSuper, async (req, res) => {
       Fecha: x.creado ? new Date(x.creado).toLocaleString('es-MX', { timeZone: 'America/Mexico_City' }) : '',
       Zona: x.zona, Gestor: x.usuario, Contrato: x.contrato, No_Cliente: x.no_cliente,
       Cliente: x.nombre, Grado: x.grado, Saldo: x.saldo, Exigible: x.exigible, Atraso: x.atraso,
-      Resultado: x.resultado, Notas: x.notas || '',
+      Resultado: x.resultado, Cobrado: x.monto_cobrado || '', Notas: x.notas || '',
       MontoPrometido: x.monto_prometido || '', FechaPromesa: x.fecha_promesa || '',
       Domicilio: x.domicilio || '', Tel1: x.tel1 || '', Tel2: x.tel2 || '',
       Ubicacion: (x.lat != null && x.lng != null) ? `${x.lat},${x.lng}` : '',
@@ -604,7 +605,8 @@ app.get('/api/resumen', auth, async (req, res) => {
     const r = await q(`
       SELECT COUNT(*) FILTER (WHERE c.activo) AS clientes,
              COUNT(DISTINCT g.contrato) AS gestionados,
-             COUNT(DISTINCT g.contrato) FILTER (WHERE g.creado::date=CURRENT_DATE) AS hoy
+             COUNT(DISTINCT g.contrato) FILTER (WHERE g.creado::date=CURRENT_DATE) AS hoy,
+             COALESCE(SUM(g.monto_cobrado) FILTER (WHERE g.creado::date=CURRENT_DATE),0) AS cobrado_hoy
       FROM clientes c LEFT JOIN gestiones g ON g.contrato=c.contrato
       WHERE 1=1 ${w}`, p);
     const meta = await q(`SELECT valor FROM meta WHERE clave='ultima_importacion'`);
