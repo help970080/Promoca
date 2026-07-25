@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: cuautla
+    runtime: node
+    plan: free            # cambia a starter si no quieres que se duerma
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cuautla-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true   # Render genera un secreto seguro solo
+      - key: REGION
+        value: CUAUTLA
+      - key: PASS_ZONA
+        value: cuautla2026
+      - key: PASS_SUPER
+        value: super2026
+
+databases:
+  - name: cuautla-db
+    plan: free            # gratis expira a los ~90 dias; usa basic-256mb para produccion
