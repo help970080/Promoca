@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Gestión CUAUTLA</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#1a2234; --panel2:#232d44; --line:#2e3a55;
+    --txt:#e9edf6; --muted:#93a0bd; --acc:#3b82f6; --acc2:#2563eb;
+    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --gold:#eab308;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+       background:var(--bg);color:var(--txt);font-size:15px}
+  header{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);
+         padding:10px 14px;display:flex;align-items:center;gap:10px}
+  header h1{font-size:16px;margin:0;font-weight:700;letter-spacing:.5px}
+  header .sub{font-size:11px;color:var(--muted)}
+  .grow{flex:1}
+  button{font:inherit;cursor:pointer;border:none;border-radius:10px;padding:10px 14px;
+         background:var(--acc);color:#fff;font-weight:600}
+  button.sec{background:var(--panel2);color:var(--txt);border:1px solid var(--line)}
+  button.ghost{background:transparent;color:var(--muted);padding:6px 10px}
+  button:active{transform:translateY(1px)}
+  input,select,textarea{font:inherit;width:100%;padding:11px 12px;border-radius:10px;
+         border:1px solid var(--line);background:var(--panel2);color:var(--txt);outline:none}
+  textarea{resize:vertical;min-height:70px}
+  .wrap{max-width:760px;margin:0 auto;padding:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+  .row{display:flex;gap:8px;align-items:center}
+  .muted{color:var(--muted)}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700}
+  .g-Vigente{background:rgba(34,197,94,.18);color:#4ade80}
+  .g-Vencida{background:rgba(245,158,11,.18);color:#fbbf24}
+  .g-Mora{background:rgba(239,68,68,.18);color:#f87171}
+  .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  .kpi .b{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center}
+  .kpi .n{font-size:22px;font-weight:800}
+  .kpi .l{font-size:11px;color:var(--muted);margin-top:2px}
+  .cli{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:9px}
+  .cli .nom{font-weight:700}
+  .cli .meta{font-size:12px;color:var(--muted);margin-top:3px}
+  .cli .tag{font-size:11px;margin-top:6px}
+  .tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;margin-bottom:10px}
+  .tabs button{white-space:nowrap;padding:8px 12px;font-size:13px}
+  .tabs button.on{background:var(--acc)}
+  .tabs button:not(.on){background:var(--panel2);color:var(--muted);border:1px solid var(--line)}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;z-index:50;
+         align-items:flex-end;justify-content:center}
+  .modal.on{display:flex}
+  .sheet{background:var(--panel);width:100%;max-width:760px;max-height:92vh;overflow:auto;
+          border-radius:18px 18px 0 0;padding:16px;border:1px solid var(--line)}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+  .thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .thumbs img{width:74px;height:74px;object-fit:cover;border-radius:10px;border:1px solid var(--line)}
+  .loc{font-size:12px;padding:8px 10px;border-radius:9px;background:var(--panel2);border:1px solid var(--line)}
+  .loc.ok{border-color:var(--ok);color:#4ade80}
+  .center{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+  .logo{font-size:26px;font-weight:900;letter-spacing:3px;text-align:center;
+        background:linear-gradient(90deg,#3b82f6,#22c55e);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#111827;
+         border:1px solid var(--line);padding:11px 16px;border-radius:10px;z-index:99;display:none;font-size:14px}
+  .hidden{display:none!important}
+  a{color:var(--acc)}
+  .link{color:var(--acc);text-decoration:underline;cursor:pointer}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login" class="center">
+  <div style="width:100%;max-width:360px">
+    <div class="logo">CUAUTLA</div>
+    <p class="muted" style="text-align:center;margin:6px 0 20px">Gestión de cobranza por zona</p>
+    <div class="card">
+      <div class="field"><label>Usuario</label><input id="lu" autocapitalize="none" autocomplete="username" placeholder="cuautla01 / super"></div>
+      <div class="field"><label>Contraseña</label><input id="lp" type="password" autocomplete="current-password"></div>
+      <button style="width:100%" onclick="login()">Entrar</button>
+      <p id="lerr" class="muted" style="color:var(--bad);text-align:center;margin:10px 0 0;font-size:13px"></p>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" class="hidden">
+  <header>
+    <div>
+      <h1 id="hTitle">CUAUTLA</h1>
+      <div class="sub" id="hSub"></div>
+    </div>
+    <div class="grow"></div>
+    <button class="ghost" onclick="verPass()">🔑</button>
+    <button class="ghost" onclick="salir()">Salir</button>
+  </header>
+
+  <div class="wrap">
+    <div class="kpi" id="kpi"></div>
+
+    <!-- barra supervisor -->
+    <div id="superBar" class="card hidden">
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        <button class="sec" onclick="document.getElementById('file').click()">📥 Importar listado semanal</button>
+        <input id="file" type="file" accept=".xlsx" class="hidden" onchange="importar(this)">
+        <button class="sec" onclick="exportar()">📤 Exportar cuentas gestionadas</button>
+      </div>
+      <div id="impMsg" class="muted" style="font-size:12px;margin-top:8px"></div>
+      <div id="zonasBox" style="margin-top:12px"></div>
+    </div>
+
+    <!-- selector de grado -->
+    <div class="tabs" id="tabs">
+      <button data-g="" class="on" onclick="setGrado('')">Todos</button>
+      <button data-g="Vigente" onclick="setGrado('Vigente')">Vigente</button>
+      <button data-g="Vencida" onclick="setGrado('Vencida')">Vencida</button>
+      <button data-g="Mora" onclick="setGrado('Mora')">Mora</button>
+    </div>
+
+    <div class="row" style="gap:8px;margin-bottom:10px">
+      <input id="buscar" placeholder="Buscar nombre, contrato, domicilio…" oninput="buscarDeb()">
+      <button class="sec" id="btnPend" onclick="togglePend()">Pendientes hoy</button>
+    </div>
+    <div id="zonaSelWrap" class="hidden" style="margin-bottom:10px">
+      <select id="zonaSel" onchange="cargarClientes()"></select>
+    </div>
+
+    <div id="lista"></div>
+    <p id="listaMsg" class="muted" style="text-align:center;padding:20px"></p>
+  </div>
+</div>
+
+<!-- MODAL CLIENTE / GESTION -->
+<div class="modal" id="mCli"><div class="sheet" id="mCliBody"></div></div>
+<!-- MODAL PASSWORD -->
+<div class="modal" id="mPass"><div class="sheet">
+  <h3 style="margin-top:0">Cambiar contraseña</h3>
+  <div class="field"><label>Contraseña actual</label><input id="pa" type="password"></div>
+  <div class="field"><label>Nueva contraseña</label><input id="pn" type="password"></div>
+  <div class="row"><button onclick="guardarPass()">Guardar</button><button class="sec" onclick="cerrar('mPass')">Cancelar</button></div>
+  <p id="pmsg" class="muted" style="font-size:13px;margin-top:8px"></p>
+</div></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+let TK = localStorage.getItem('cuautla_tk') || '';
+let ME = JSON.parse(localStorage.getItem('cuautla_me') || 'null');
+let GRADO = '', PEND = false, BUSCAR = '', ZONA_SUPER = '';
+let CLIENTE_ACTUAL = null, FOTOS = [], GPS = null;
+
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';
+  clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',2600);}
+function cerrar(id){document.getElementById(id).classList.remove('on');}
+async function api(path, opts={}){
+  opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{},
+    TK?{'Authorization':'Bearer '+TK}:{});
+  const r = await fetch(API+path, opts);
+  if(r.status===401){salir();throw new Error('sesión expirada');}
+  const ct = r.headers.get('content-type')||'';
+  if(!ct.includes('application/json')) return r;
+  const j = await r.json();
+  if(!r.ok) throw new Error(j.error||'error');
+  return j;
+}
+
+/* -------- LOGIN -------- */
+async function login(){
+  const usuario=document.getElementById('lu').value.trim();
+  const password=document.getElementById('lp').value;
+  document.getElementById('lerr').textContent='';
+  try{
+    const j=await api('/api/login',{method:'POST',body:JSON.stringify({usuario,password})});
+    TK=j.token; ME={rol:j.rol,zona:j.zona,nombre:j.nombre,usuario:j.usuario};
+    localStorage.setItem('cuautla_tk',TK); localStorage.setItem('cuautla_me',JSON.stringify(ME));
+    iniciar();
+  }catch(e){document.getElementById('lerr').textContent=e.message;}
+}
+function salir(){localStorage.removeItem('cuautla_tk');localStorage.removeItem('cuautla_me');
+  TK='';ME=null;location.reload();}
+
+function iniciar(){
+  document.getElementById('login').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  document.getElementById('hSub').textContent = ME.rol==='super'
+    ? 'Supervisor · '+(ME.nombre||'') : (ME.zona||'');
+  const sup = ME.rol==='super';
+  document.getElementById('superBar').classList.toggle('hidden', !sup);
+  document.getElementById('zonaSelWrap').classList.toggle('hidden', !sup);
+  cargarResumen();
+  if(sup) cargarZonas();
+  cargarClientes();
+}
+
+/* -------- RESUMEN / KPI -------- */
+async function cargarResumen(){
+  try{
+    const r=await api('/api/resumen');
+    document.getElementById('kpi').innerHTML=`
+      <div class="b"><div class="n">${r.clientes||0}</div><div class="l">Clientes activos</div></div>
+      <div class="b"><div class="n">${r.gestionados||0}</div><div class="l">Gestionados</div></div>
+      <div class="b"><div class="n" style="color:var(--ok)">${r.hoy||0}</div><div class="l">Gestionados hoy</div></div>`;
+    if(r.ultima_importacion){
+      const u=r.ultima_importacion;
+      document.getElementById('impMsg').textContent=
+        `Último listado: sem ${u.semana||'?'} · ${u.total} clientes · ${new Date(u.fecha).toLocaleString('es-MX')}`;
+    }
+  }catch(e){}
+}
+
+/* -------- ZONAS (super) -------- */
+async function cargarZonas(){
+  try{
+    const z=await api('/api/zonas');
+    const sel=document.getElementById('zonaSel');
+    sel.innerHTML='<option value="">— Todas las zonas —</option>'+
+      z.map(x=>`<option value="${x.zona}">${x.zona} (${x.clientes})</option>`).join('');
+    document.getElementById('zonasBox').innerHTML = z.map(x=>`
+      <div class="cli" onclick="verZona('${x.zona}')" style="cursor:pointer">
+        <div class="nom">${x.zona}</div>
+        <div class="meta">${x.clientes} clientes · ${x.gestionados} gestionados</div>
+        <div class="tag">
+          <span class="pill g-Vigente">V ${x.vigente}</span>
+          <span class="pill g-Vencida">Vc ${x.vencida}</span>
+          <span class="pill g-Mora">M ${x.mora}</span>
+        </div>
+      </div>`).join('');
+  }catch(e){}
+}
+function verZona(z){document.getElementById('zonaSel').value=z;cargarClientes();
+  window.scrollTo({top:document.getElementById('tabs').offsetTop-60,behavior:'smooth'});}
+
+/* -------- CLIENTES -------- */
+function setGrado(g){GRADO=g;[...document.querySelectorAll('#tabs button')].forEach(b=>
+  b.classList.toggle('on',b.dataset.g===g));cargarClientes();}
+let _bt;function buscarDeb(){clearTimeout(_bt);_bt=setTimeout(()=>{BUSCAR=document.getElementById('buscar').value.trim();cargarClientes();},300);}
+function togglePend(){PEND=!PEND;document.getElementById('btnPend').classList.toggle('on',PEND);
+  document.getElementById('btnPend').style.background=PEND?'var(--acc)':'';cargarClientes();}
+
+async function cargarClientes(){
+  const msg=document.getElementById('listaMsg');msg.textContent='Cargando…';
+  document.getElementById('lista').innerHTML='';
+  const p=new URLSearchParams();
+  if(GRADO)p.set('grado',GRADO);
+  if(BUSCAR)p.set('buscar',BUSCAR);
+  if(PEND)p.set('pendientes','1');
+  if(ME.rol==='super'){const z=document.getElementById('zonaSel').value;if(z)p.set('zona',z);}
+  try{
+    const cli=await api('/api/clientes?'+p.toString());
+    if(!cli.length){msg.textContent='Sin clientes con ese filtro.';return;}
+    msg.textContent='';
+    document.getElementById('lista').innerHTML=cli.map(c=>{
+      const ult=c.ult_gestion?`· última: ${c.ult_resultado||''} ${new Date(c.ult_gestion).toLocaleDateString('es-MX')}`:'';
+      return `<div class="cli" onclick="abrirCliente('${c.contrato}')">
+        <div class="row"><div class="nom grow">${c.nombre||'(sin nombre)'}</div>
+          <span class="pill g-${c.grado}">${c.grado}</span></div>
+        <div class="meta">${c.contrato} · Saldo $${fmt(c.saldo)} · Exig $${fmt(c.exigible)}${c.atraso>0?` · Atraso $${fmt(c.atraso)}`:''}</div>
+        <div class="meta">${c.domicilio||''}</div>
+        <div class="tag muted">${c.n_gestiones>0?`✓ ${c.n_gestiones} gestión(es) ${ult}`:'Sin gestionar'}</div>
+      </div>`;}).join('');
+  }catch(e){msg.textContent=e.message;}
+}
+function fmt(n){return (Number(n)||0).toLocaleString('es-MX',{maximumFractionDigits:0});}
+
+/* -------- DETALLE + GESTION -------- */
+async function abrirCliente(contrato){
+  FOTOS=[];GPS=null;
+  const body=document.getElementById('mCliBody');
+  body.innerHTML='<p class="muted">Cargando…</p>';
+  document.getElementById('mCli').classList.add('on');
+  try{
+    const d=await api('/api/cliente/'+encodeURIComponent(contrato));
+    CLIENTE_ACTUAL=d.cliente;const c=d.cliente;
+    const tels=[c.tel1,c.tel2,c.tel3].filter(t=>t&&t!=='NA'&&t!=='SN');
+    const hist=d.gestiones.map(g=>{
+      const fotos=(g.fotos||[]).map(fid=>`<img src="/api/foto/${fid}?t=${TK}" onclick="window.open('/api/foto/${fid}?t=${TK}')">`).join('');
+      const loc=(g.lat!=null)?`<a href="https://maps.google.com/?q=${g.lat},${g.lng}" target="_blank">📍 ubicación</a>`:'';
+      return `<div class="card" style="background:var(--panel2);margin:0 0 8px">
+        <div class="row"><b class="grow">${g.resultado}</b><span class="muted" style="font-size:12px">${new Date(g.creado).toLocaleString('es-MX')}</span></div>
+        <div class="meta muted">${g.usuario} ${loc}</div>
+        ${g.notas?`<div style="margin-top:6px">${g.notas}</div>`:''}
+        ${g.monto_prometido?`<div class="meta">Prometido: $${fmt(g.monto_prometido)} ${g.fecha_promesa?('· '+g.fecha_promesa):''}</div>`:''}
+        ${fotos?`<div class="thumbs">${fotos}</div>`:''}
+      </div>`;}).join('') || '<p class="muted">Sin gestiones aún.</p>';
+
+    body.innerHTML=`
+      <div class="row"><h3 class="grow" style="margin:0">${c.nombre||''}</h3>
+        <button class="ghost" onclick="cerrar('mCli')">✕</button></div>
+      <div class="meta muted" style="margin:4px 0 10px">
+        ${c.contrato} · <span class="pill g-${c.grado}">${c.grado}</span> · ${c.zona}</div>
+      <div class="card" style="background:var(--panel2)">
+        <div class="row" style="justify-content:space-between"><span class="muted">Saldo</span><b>$${fmt(c.saldo)}</b></div>
+        <div class="row" style="justify-content:space-between"><span class="muted">Exigible</span><b>$${fmt(c.exigible)}</b></div>
+        <div class="row" style="justify-content:space-between"><span class="muted">Atraso</span><b>$${fmt(c.atraso)} (${c.sem_atraso||0} sem)</b></div>
+        <div class="row" style="justify-content:space-between"><span class="muted">Liquidación</span><b>$${fmt(c.liquidacion)}</b></div>
+        <div style="margin-top:8px">${c.domicilio||''}</div>
+        <div class="meta" style="margin-top:6px">${tels.length?tels.map(t=>`<a href="tel:${t}">📞 ${t}</a>`).join(' · '):'sin teléfono'}</div>
+        ${c.aval?`<div class="meta muted" style="margin-top:6px">Aval: ${c.aval} — ${c.dom_aval||''}</div>`:''}
+      </div>
+
+      <h4 style="margin:14px 0 8px">Registrar gestión</h4>
+      <div class="field"><label>Resultado</label>
+        <select id="gRes">
+          <option value="">— selecciona —</option>
+          <option>Pago realizado</option>
+          <option>Promesa de pago</option>
+          <option>No se encontró</option>
+          <option>Cliente se negó</option>
+          <option>Domicilio no localizado</option>
+          <option>Refinanciamiento</option>
+          <option>Ilocalizable</option>
+          <option>Otro</option>
+        </select></div>
+      <div class="row" style="gap:8px">
+        <div class="field grow"><label>Monto prometido (opcional)</label><input id="gMonto" type="number" inputmode="decimal" placeholder="0"></div>
+        <div class="field grow"><label>Fecha promesa</label><input id="gFecha" type="date"></div>
+      </div>
+      <div class="field"><label>Notas</label><textarea id="gNotas" placeholder="Detalle de la visita…"></textarea></div>
+      <div class="field">
+        <label>Evidencia y ubicación</label>
+        <div class="row" style="gap:8px">
+          <button class="sec grow" onclick="document.getElementById('cam').click()">📷 Tomar foto</button>
+          <button class="sec grow" onclick="capturarGPS()">📍 Ubicación</button>
+        </div>
+        <input id="cam" type="file" accept="image/*" capture="environment" class="hidden" onchange="agregarFoto(this)">
+        <div id="locBox" class="loc" style="margin-top:8px">Sin ubicación</div>
+        <div class="thumbs" id="thumbs"></div>
+      </div>
+      <button style="width:100%;margin-top:6px" onclick="guardarGestion()">Guardar gestión</button>
+
+      <h4 style="margin:18px 0 8px">Historial</h4>${hist}`;
+  }catch(e){body.innerHTML='<p style="color:var(--bad)">'+e.message+'</p>';}
+}
+
+/* -------- FOTO (comprimida) + GPS -------- */
+async function agregarFoto(input){
+  const f=input.files&&input.files[0];input.value='';
+  if(!f)return;
+  try{
+    const dataUrl=await comprimir(f,1000,0.6);
+    FOTOS.push(dataUrl);pintarThumbs();
+  }catch(e){toast('No se pudo procesar la foto');}
+}
+function comprimir(file,max,calidad){
+  return new Promise((res,rej)=>{
+    // createImageBitmap decodifica nativo (mejor en gama baja); fallback a objectURL
+    const done=(bmp)=>{
+      const s=Math.min(1,max/Math.max(bmp.width,bmp.height));
+      const w=Math.round(bmp.width*s),h=Math.round(bmp.height*s);
+      const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+      cv.getContext('2d').drawImage(bmp,0,0,w,h);
+      if(bmp.close)bmp.close();
+      res(cv.toDataURL('image/jpeg',calidad));
+    };
+    if(window.createImageBitmap){
+      createImageBitmap(file).then(done).catch(()=>fallback());
+    } else fallback();
+    function fallback(){
+      const url=URL.createObjectURL(file);const img=new Image();
+      img.onload=()=>{URL.revokeObjectURL(url);done(img);};
+      img.onerror=()=>{URL.revokeObjectURL(url);rej();};img.src=url;
+    }
+  });
+}
+function pintarThumbs(){document.getElementById('thumbs').innerHTML=
+  FOTOS.map((d,i)=>`<img src="${d}" onclick="quitarFoto(${i})" title="tocar para quitar">`).join('');}
+function quitarFoto(i){FOTOS.splice(i,1);pintarThumbs();}
+function capturarGPS(){
+  const box=document.getElementById('locBox');box.textContent='Obteniendo ubicación…';
+  if(!navigator.geolocation){box.textContent='GPS no disponible';return;}
+  navigator.geolocation.getCurrentPosition(p=>{
+    GPS={lat:+p.coords.latitude.toFixed(6),lng:+p.coords.longitude.toFixed(6)};
+    box.className='loc ok';box.innerHTML=`📍 ${GPS.lat}, ${GPS.lng} · <a href="https://maps.google.com/?q=${GPS.lat},${GPS.lng}" target="_blank">ver</a>`;
+  },err=>{box.textContent='No se pudo obtener ubicación ('+err.message+')';},
+  {enableHighAccuracy:true,timeout:10000,maximumAge:0});
+}
+
+async function guardarGestion(){
+  const resultado=document.getElementById('gRes').value;
+  if(!resultado){toast('Selecciona un resultado');return;}
+  const payload={
+    contrato:CLIENTE_ACTUAL.contrato,resultado,
+    notas:document.getElementById('gNotas').value.trim(),
+    monto_prometido:document.getElementById('gMonto').value||null,
+    fecha_promesa:document.getElementById('gFecha').value||null,
+    lat:GPS?GPS.lat:null,lng:GPS?GPS.lng:null,fotos:FOTOS
+  };
+  try{
+    await api('/api/gestion',{method:'POST',body:JSON.stringify(payload)});
+    toast('Gestión guardada ✓');cerrar('mCli');
+    cargarResumen();cargarClientes();if(ME.rol==='super')cargarZonas();
+  }catch(e){toast(e.message);}
+}
+
+/* -------- IMPORTAR / EXPORTAR (super) -------- */
+async function importar(input){
+  const f=input.files&&input.files[0];input.value='';
+  if(!f)return;
+  const msg=document.getElementById('impMsg');msg.textContent='Importando… (puede tardar)';
+  const fd=new FormData();fd.append('archivo',f);
+  try{
+    const r=await fetch(API+'/api/importar',{method:'POST',headers:{'Authorization':'Bearer '+TK},body:fd});
+    const j=await r.json();if(!r.ok)throw new Error(j.error||'error');
+    msg.textContent=`Importado ✓ ${j.total} clientes (${j.nuevos} nuevos, ${j.actualizados} actualizados)`;
+    toast('Listado importado');cargarResumen();cargarZonas();cargarClientes();
+  }catch(e){msg.textContent='Error: '+e.message;toast(e.message);}
+}
+function exportar(){window.open(API+'/api/exportar?t='+encodeURIComponent(TK),'_blank');}
+
+/* -------- PASSWORD -------- */
+function verPass(){document.getElementById('mPass').classList.add('on');document.getElementById('pmsg').textContent='';}
+async function guardarPass(){
+  try{
+    await api('/api/password',{method:'POST',body:JSON.stringify({
+      actual:document.getElementById('pa').value,nueva:document.getElementById('pn').value})});
+    document.getElementById('pmsg').style.color='var(--ok)';
+    document.getElementById('pmsg').textContent='Contraseña actualizada ✓';
+    setTimeout(()=>cerrar('mPass'),900);
+  }catch(e){document.getElementById('pmsg').style.color='var(--bad)';document.getElementById('pmsg').textContent=e.message;}
+}
+
+/* -------- ARRANQUE -------- */
+document.getElementById('lp').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+if(TK&&ME)iniciar();
+</script>
+</body>
+</html>
