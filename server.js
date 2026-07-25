@@ -132,6 +132,7 @@ async function initDB() {
   await q(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION`);
   await q(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION`);
   await q(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS geo_fuente TEXT`);
+  await q(`CREATE TABLE IF NOT EXISTS geo_cache (clave TEXT PRIMARY KEY, lat DOUBLE PRECISION, lng DOUBLE PRECISION, creado TIMESTAMPTZ DEFAULT now())`);
 }
 
 // Siembra usuarios: supervisor + una cuenta por cada zona que exista en clientes.
@@ -448,62 +449,117 @@ app.get('/api/mapa', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Limpia el domicilio para geocodificar: quita #SN e Int:*, arma "Colonia, Cuautla, Morelos, Mexico".
-function consultaGeo(domicilio) {
-  if (!domicilio) return null;
-  let s = String(domicilio)
-    .replace(/#\s*S\/?N/ig, '').replace(/#\s*sn/ig, '')
-    .replace(/Int:\s*[^,]*/ig, '')
-    .replace(/\s{2,}/g, ' ').replace(/,\s*,/g, ',').trim();
-  if (!/mexico|méxico/i.test(s)) s += ', Mexico';
-  return s;
+// Extrae la colonia del domicilio: "CALLE #x, Int:y, COLONIA, Cuautla, MORELOS" -> "COLONIA"
+function coloniaDe(dom) {
+  if (!dom) return null;
+  const parts = String(dom).split(',').map(s => s.trim()).filter(Boolean);
+  const i = parts.findIndex(p => /cuautla/i.test(p));
+  let col = i > 0 ? parts[i - 1] : (parts.length >= 3 ? parts[parts.length - 3] : null);
+  if (!col) return null;
+  return col.replace(/#\s*S\/?N/ig, '').replace(/Int:\s*[^,]*/ig, '').replace(/\s{2,}/g, ' ').trim() || null;
 }
-async function geocodificarUno(domicilio) {
-  const query = consultaGeo(domicilio);
-  if (!query) return null;
-  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=mx&q='
-    + encodeURIComponent(query);
-  const ctrl = new AbortController();
-  const to = setTimeout(() => ctrl.abort(), 8000);
+// Limites generosos alrededor de Cuautla/Morelos para descartar coincidencias basura (CDMX, etc.)
+const GEO_BOX = { latMin: 18.0, latMax: 19.5, lngMin: -99.5, lngMax: -98.0 };
+function dentroDeCaja(lat, lng) {
+  return lat >= GEO_BOX.latMin && lat <= GEO_BOX.latMax && lng >= GEO_BOX.lngMin && lng <= GEO_BOX.lngMax;
+}
+// Geocodifica una colonia probando de lo especifico a lo general. Devuelve {lat,lng} o null.
+async function geocodColonia(colonia) {
+  const intentos = [
+    `${colonia}, Cuautla, Morelos, Mexico`,
+    `${colonia}, Morelos, Mexico`,
+  ];
+  for (const query of intentos) {
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=mx&q='
+      + encodeURIComponent(query);
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 6000);
+    try {
+      const r = await fetch(url, { headers: { 'User-Agent': 'GestionCuautla/1.0 (cobranza interna)' }, signal: ctrl.signal });
+      if (r.status === 429 || r.status === 403) { clearTimeout(to); const e = new Error('limite'); e.limite = true; throw e; }
+      if (r.ok) {
+        const j = await r.json();
+        if (Array.isArray(j) && j.length) {
+          const lat = +parseFloat(j[0].lat).toFixed(6), lng = +parseFloat(j[0].lon).toFixed(6);
+          if (dentroDeCaja(lat, lng)) { clearTimeout(to); return { lat, lng }; }
+        }
+      }
+    } catch (e) { if (e.limite) { clearTimeout(to); throw e; } }
+    finally { clearTimeout(to); }
+    await new Promise(t => setTimeout(t, 1100)); // 1/seg entre peticiones (politica Nominatim)
+  }
+  return null;
+}
+function jitter(v) { return +(v + (Math.random() - 0.5) * 0.0016).toFixed(6); } // ~±90 m
+
+// Estado del proceso de geocodificado (en memoria; el avance real vive en geo_cache).
+const GEO = { corriendo: false, fase: 'inactivo', total: 0, hechos: 0, ubicados: 0, colonias: 0, colHechas: 0, error: null };
+
+async function correrGeo() {
+  if (GEO.corriendo) return;
+  GEO.corriendo = true; GEO.fase = 'preparando'; GEO.error = null; GEO.hechos = 0; GEO.ubicados = 0;
   try {
-    const r = await fetch(url, {
-      headers: { 'User-Agent': 'GestionCuautla/1.0 (cobranza interna)' },
-      signal: ctrl.signal,
-    });
-    if (!r.ok) return null;
-    const j = await r.json();
-    if (!Array.isArray(j) || !j.length) return null;
-    return { lat: +parseFloat(j[0].lat).toFixed(6), lng: +parseFloat(j[0].lon).toFixed(6) };
-  } catch { return null; }
-  finally { clearTimeout(to); }
+    // Colonias pendientes (clientes activos sin ubicacion, que no sean 'gps')
+    const cli = await q(`
+      SELECT contrato, domicilio FROM clientes
+      WHERE activo=true AND lat IS NULL AND (geo_fuente IS DISTINCT FROM 'gps') AND domicilio IS NOT NULL`);
+    const porColonia = new Map();
+    for (const c of cli.rows) {
+      const col = coloniaDe(c.domicilio);
+      if (!col) continue;
+      const k = col.toUpperCase();
+      if (!porColonia.has(k)) porColonia.set(k, { colonia: col, contratos: [] });
+      porColonia.get(k).contratos.push(c.contrato);
+    }
+    GEO.total = cli.rows.length; GEO.colonias = porColonia.size; GEO.colHechas = 0; GEO.fase = 'ubicando';
+
+    for (const [k, v] of porColonia) {
+      if (!GEO.corriendo) { GEO.fase = 'detenido'; break; }
+      // cache?
+      let coord = null;
+      const cach = await q('SELECT lat,lng FROM geo_cache WHERE clave=$1', [k]);
+      if (cach.rowCount && cach.rows[0].lat != null) coord = cach.rows[0];
+      else if (cach.rowCount && cach.rows[0].lat == null) coord = null; // ya intentada sin exito
+      else {
+        try {
+          coord = await geocodColonia(v.colonia);
+          await q(`INSERT INTO geo_cache(clave,lat,lng) VALUES($1,$2,$3)
+                   ON CONFLICT(clave) DO UPDATE SET lat=EXCLUDED.lat,lng=EXCLUDED.lng`,
+            [k, coord ? coord.lat : null, coord ? coord.lng : null]);
+        } catch (e) {
+          if (e.limite) { GEO.fase = 'pausado_limite'; GEO.error = 'El servicio de mapas limitó las consultas. Reintenta en unos minutos.'; break; }
+          coord = null;
+        }
+      }
+      // asignar a los clientes de la colonia (con jitter para que no se encimen)
+      if (coord) {
+        for (const contrato of v.contratos) {
+          await q(`UPDATE clientes SET lat=$1,lng=$2,geo_fuente='geocode'
+                   WHERE contrato=$3 AND (geo_fuente IS DISTINCT FROM 'gps')`,
+            [jitter(coord.lat), jitter(coord.lng), contrato]);
+          GEO.ubicados++;
+        }
+      } else {
+        for (const contrato of v.contratos)
+          await q(`UPDATE clientes SET geo_fuente='no_geo' WHERE contrato=$1 AND geo_fuente IS NULL`, [contrato]);
+      }
+      GEO.hechos += v.contratos.length; GEO.colHechas++;
+    }
+    if (GEO.fase === 'ubicando') GEO.fase = 'terminado';
+  } catch (e) { GEO.fase = 'error'; GEO.error = e.message; console.error('[geo]', e); }
+  finally { GEO.corriendo = false; }
 }
 
-// Geocodifica por lotes los clientes SIN ubicacion. Reanudable: llama varias veces.
-// Respeta el limite de Nominatim (1 solicitud/seg). No pisa ubicaciones 'gps'.
-app.post('/api/geocodificar', auth, soloSuper, async (req, res) => {
-  try {
-    const lote = Math.min(40, Math.max(1, Number((req.body || {}).lote) || 25));
-    const r = await q(`
-      SELECT contrato,domicilio FROM clientes
-      WHERE activo=true AND (lat IS NULL OR lng IS NULL) AND domicilio IS NOT NULL
-      ORDER BY grado DESC LIMIT $1`, [lote]);
-    let ok = 0;
-    for (const c of r.rows) {
-      const g = await geocodificarUno(c.domicilio);
-      if (g) {
-        await q(`UPDATE clientes SET lat=$1,lng=$2,geo_fuente='geocode'
-                 WHERE contrato=$3 AND geo_fuente IS DISTINCT FROM 'gps'`, [g.lat, g.lng, c.contrato]);
-        ok++;
-      } else {
-        // marca para no reintentar en cada corrida (coordenada nula pero fuente registrada)
-        await q(`UPDATE clientes SET geo_fuente='no_geo' WHERE contrato=$1 AND geo_fuente IS NULL`, [c.contrato]);
-      }
-      await new Promise(t => setTimeout(t, 1100)); // 1.1s: politica de Nominatim
-    }
-    const rest = await q(`SELECT COUNT(*)::int AS n FROM clientes
-      WHERE activo=true AND lat IS NULL AND (geo_fuente IS NULL OR geo_fuente='geocode') AND domicilio IS NOT NULL`);
-    res.json({ procesados: r.rows.length, ubicados: ok, faltan: rest.rows[0].n });
-  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
+app.post('/api/geo/iniciar', auth, soloSuper, async (req, res) => {
+  if (GEO.corriendo) return res.json({ ok: true, ya: true, ...GEO });
+  correrGeo(); // no await: corre en segundo plano
+  res.json({ ok: true, iniciado: true });
+});
+app.post('/api/geo/detener', auth, soloSuper, (req, res) => { GEO.corriendo = false; res.json({ ok: true }); });
+app.get('/api/geo/estado', auth, soloSuper, async (req, res) => {
+  const sin = await q(`SELECT COUNT(*)::int AS n FROM clientes WHERE activo=true AND lat IS NULL AND domicilio IS NOT NULL`);
+  const con = await q(`SELECT COUNT(*)::int AS n FROM clientes WHERE activo=true AND lat IS NOT NULL`);
+  res.json({ ...GEO, sin_ubicacion: sin.rows[0].n, con_ubicacion: con.rows[0].n });
 });
 
 /* ---------------------- EXPORTAR ARCHIVO GENERAL (super) ---------------------- */
