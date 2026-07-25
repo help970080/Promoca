@@ -36,7 +36,7 @@
   .g-Vigente{background:rgba(34,197,94,.18);color:#4ade80}
   .g-Vencida{background:rgba(245,158,11,.18);color:#fbbf24}
   .g-Mora{background:rgba(239,68,68,.18);color:#f87171}
-  .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:8px;margin-bottom:12px}
   .kpi .b{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center}
   .kpi .n{font-size:22px;font-weight:800}
   .kpi .l{font-size:11px;color:var(--muted);margin-top:2px}
@@ -229,7 +229,8 @@ async function cargarResumen(){
     document.getElementById('kpi').innerHTML=`
       <div class="b"><div class="n">${r.clientes||0}</div><div class="l">Clientes activos</div></div>
       <div class="b"><div class="n">${r.gestionados||0}</div><div class="l">Gestionados</div></div>
-      <div class="b"><div class="n" style="color:var(--ok)">${r.hoy||0}</div><div class="l">Gestionados hoy</div></div>`;
+      <div class="b"><div class="n" style="color:var(--ok)">${r.hoy||0}</div><div class="l">Gestionados hoy</div></div>
+      <div class="b"><div class="n" style="color:var(--gold)">$${fmt(r.cobrado_hoy)}</div><div class="l">Cobrado hoy</div></div>`;
     if(r.ultima_importacion){
       const u=r.ultima_importacion;
       document.getElementById('impMsg').textContent=
@@ -310,6 +311,7 @@ async function abrirCliente(contrato){
         <div class="row"><b class="grow">${g.resultado}</b><span class="muted" style="font-size:12px">${new Date(g.creado).toLocaleString('es-MX')}</span></div>
         <div class="meta muted">${g.usuario} ${loc}</div>
         ${g.notas?`<div style="margin-top:6px">${g.notas}</div>`:''}
+        ${g.monto_cobrado?`<div class="meta" style="color:var(--ok)">Cobrado: $${fmt(g.monto_cobrado)}</div>`:''}
         ${g.monto_prometido?`<div class="meta">Prometido: $${fmt(g.monto_prometido)} ${g.fecha_promesa?('· '+g.fecha_promesa):''}</div>`:''}
         ${fotos?`<div class="thumbs">${fotos}</div>`:''}
       </div>`;}).join('') || '<p class="muted">Sin gestiones aún.</p>';
@@ -332,7 +334,7 @@ async function abrirCliente(contrato){
 
       <h4 style="margin:14px 0 8px">Registrar gestión</h4>
       <div class="field"><label>Resultado</label>
-        <select id="gRes">
+        <select id="gRes" onchange="ajustarCampos()">
           <option value="">— selecciona —</option>
           <option>Pago realizado</option>
           <option>Promesa de pago</option>
@@ -343,8 +345,12 @@ async function abrirCliente(contrato){
           <option>Ilocalizable</option>
           <option>Otro</option>
         </select></div>
-      <div class="row" style="gap:8px">
-        <div class="field grow"><label>Monto prometido (opcional)</label><input id="gMonto" type="number" inputmode="decimal" placeholder="0"></div>
+      <div class="field hidden" id="rowCobrado">
+        <label>Monto cobrado</label>
+        <input id="gCobrado" type="number" inputmode="decimal" placeholder="0">
+      </div>
+      <div class="row hidden" id="rowPromesa" style="gap:8px">
+        <div class="field grow"><label>Monto prometido</label><input id="gMonto" type="number" inputmode="decimal" placeholder="0"></div>
         <div class="field grow"><label>Fecha promesa</label><input id="gFecha" type="date"></div>
       </div>
       <div class="field"><label>Notas</label><textarea id="gNotas" placeholder="Detalle de la visita…"></textarea></div>
@@ -407,12 +413,26 @@ function capturarGPS(){
   {enableHighAccuracy:true,timeout:10000,maximumAge:0});
 }
 
+function ajustarCampos(){
+  const r=document.getElementById('gRes').value;
+  const pago=r==='Pago realizado', prom=r==='Promesa de pago';
+  document.getElementById('rowCobrado').classList.toggle('hidden',!pago);
+  document.getElementById('rowPromesa').classList.toggle('hidden',!prom);
+  // prellenar cobrado con lo exigible (lo que toca pagar esta semana) si está vacío
+  if(pago){
+    const g=document.getElementById('gCobrado');
+    if(!g.value && CLIENTE_ACTUAL && CLIENTE_ACTUAL.exigible) g.value=Math.round(CLIENTE_ACTUAL.exigible);
+    g.focus();g.select&&g.select();
+  }
+}
+
 async function guardarGestion(){
   const resultado=document.getElementById('gRes').value;
   if(!resultado){toast('Selecciona un resultado');return;}
   const payload={
     contrato:CLIENTE_ACTUAL.contrato,resultado,
     notas:document.getElementById('gNotas').value.trim(),
+    monto_cobrado:(resultado==='Pago realizado')?(document.getElementById('gCobrado').value||null):null,
     monto_prometido:document.getElementById('gMonto').value||null,
     fecha_promesa:document.getElementById('gFecha').value||null,
     lat:GPS?GPS.lat:null,lng:GPS?GPS.lng:null,fotos:FOTOS
