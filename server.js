@@ -96,6 +96,9 @@ async function initDB() {
       dom_aval TEXT,
       tel_aval1 TEXT, tel_aval2 TEXT, tel_aval3 TEXT,
       semana INTEGER,
+      lat DOUBLE PRECISION,
+      lng DOUBLE PRECISION,
+      geo_fuente TEXT,               -- 'gps' (exacta, de gestion) | 'geocode' (por direccion)
       activo BOOLEAN DEFAULT true,
       actualizado TIMESTAMPTZ DEFAULT now()
     );
@@ -125,6 +128,10 @@ async function initDB() {
     );
     CREATE TABLE IF NOT EXISTS meta (clave TEXT PRIMARY KEY, valor TEXT);
   `);
+  // Columnas de ubicacion para bases que ya existian antes de esta version.
+  await q(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION`);
+  await q(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION`);
+  await q(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS geo_fuente TEXT`);
 }
 
 // Siembra usuarios: supervisor + una cuenta por cada zona que exista en clientes.
@@ -395,6 +402,12 @@ app.post('/api/gestion', auth, async (req, res) => {
       await client.query('INSERT INTO gestion_foto(gestion_id,datos,bytes) VALUES($1,$2,$3)',
         [gid, dataUrl, dataUrl.length]);
     }
+    // El GPS de la visita es la ubicacion exacta: pisa cualquier geocodificacion.
+    if (lat != null && lng != null) {
+      await client.query(
+        `UPDATE clientes SET lat=$1, lng=$2, geo_fuente='gps' WHERE contrato=$3`,
+        [Number(lat), Number(lng), contrato]);
+    }
     await client.query('COMMIT');
     res.json({ ok: true, id: gid });
   } catch (e) { await client.query('ROLLBACK'); console.error(e); res.status(500).json({ error: e.message }); }
@@ -411,6 +424,86 @@ app.get('/api/foto/:id', auth, async (req, res) => {
     if (!m) { res.type('text/plain').send(d); return; }
     res.type(m[1]).send(Buffer.from(m[2], 'base64'));
   } catch (e) { res.status(500).end(); }
+});
+
+/* ---------------------- MAPA ---------------------- */
+// Clientes con ubicacion conocida (gps o geocode). Zona ve lo suyo; super ve todo o filtra por zona.
+app.get('/api/mapa', auth, async (req, res) => {
+  try {
+    const zonaReq = req.user.rol === 'zona' ? req.user.zona : (req.query.zona || null);
+    const grado = req.query.grado || null;
+    const params = [];
+    let where = 'c.activo=true AND c.lat IS NOT NULL AND c.lng IS NOT NULL';
+    if (zonaReq) { params.push(zonaReq); where += ` AND c.zona=$${params.length}`; }
+    if (grado) { params.push(grado); where += ` AND c.grado=$${params.length}`; }
+    const r = await q(`
+      SELECT c.contrato,c.nombre,c.zona,c.grado,c.saldo,c.exigible,c.domicilio,c.lat,c.lng,c.geo_fuente,
+             EXISTS(SELECT 1 FROM gestiones g WHERE g.contrato=c.contrato) AS gestionado
+      FROM clientes c WHERE ${where} ORDER BY c.grado DESC LIMIT 3000`, params);
+    // Conteo de los que aun no tienen ubicacion (para avisar en el panel)
+    const sinP = []; let sinW = 'c.activo=true AND (c.lat IS NULL OR c.lng IS NULL)';
+    if (zonaReq) { sinP.push(zonaReq); sinW += ` AND c.zona=$${sinP.length}`; }
+    const sin = await q(`SELECT COUNT(*)::int AS n FROM clientes c WHERE ${sinW}`, sinP);
+    res.json({ puntos: r.rows, sin_ubicacion: sin.rows[0].n });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Limpia el domicilio para geocodificar: quita #SN e Int:*, arma "Colonia, Cuautla, Morelos, Mexico".
+function consultaGeo(domicilio) {
+  if (!domicilio) return null;
+  let s = String(domicilio)
+    .replace(/#\s*S\/?N/ig, '').replace(/#\s*sn/ig, '')
+    .replace(/Int:\s*[^,]*/ig, '')
+    .replace(/\s{2,}/g, ' ').replace(/,\s*,/g, ',').trim();
+  if (!/mexico|méxico/i.test(s)) s += ', Mexico';
+  return s;
+}
+async function geocodificarUno(domicilio) {
+  const query = consultaGeo(domicilio);
+  if (!query) return null;
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=mx&q='
+    + encodeURIComponent(query);
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const r = await fetch(url, {
+      headers: { 'User-Agent': 'GestionCuautla/1.0 (cobranza interna)' },
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j) || !j.length) return null;
+    return { lat: +parseFloat(j[0].lat).toFixed(6), lng: +parseFloat(j[0].lon).toFixed(6) };
+  } catch { return null; }
+  finally { clearTimeout(to); }
+}
+
+// Geocodifica por lotes los clientes SIN ubicacion. Reanudable: llama varias veces.
+// Respeta el limite de Nominatim (1 solicitud/seg). No pisa ubicaciones 'gps'.
+app.post('/api/geocodificar', auth, soloSuper, async (req, res) => {
+  try {
+    const lote = Math.min(40, Math.max(1, Number((req.body || {}).lote) || 25));
+    const r = await q(`
+      SELECT contrato,domicilio FROM clientes
+      WHERE activo=true AND (lat IS NULL OR lng IS NULL) AND domicilio IS NOT NULL
+      ORDER BY grado DESC LIMIT $1`, [lote]);
+    let ok = 0;
+    for (const c of r.rows) {
+      const g = await geocodificarUno(c.domicilio);
+      if (g) {
+        await q(`UPDATE clientes SET lat=$1,lng=$2,geo_fuente='geocode'
+                 WHERE contrato=$3 AND geo_fuente IS DISTINCT FROM 'gps'`, [g.lat, g.lng, c.contrato]);
+        ok++;
+      } else {
+        // marca para no reintentar en cada corrida (coordenada nula pero fuente registrada)
+        await q(`UPDATE clientes SET geo_fuente='no_geo' WHERE contrato=$1 AND geo_fuente IS NULL`, [c.contrato]);
+      }
+      await new Promise(t => setTimeout(t, 1100)); // 1.1s: politica de Nominatim
+    }
+    const rest = await q(`SELECT COUNT(*)::int AS n FROM clientes
+      WHERE activo=true AND lat IS NULL AND (geo_fuente IS NULL OR geo_fuente='geocode') AND domicilio IS NOT NULL`);
+    res.json({ procesados: r.rows.length, ubicados: ok, faltan: rest.rows[0].n });
+  } catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
 /* ---------------------- EXPORTAR ARCHIVO GENERAL (super) ---------------------- */
