@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Gestión CUAUTLA</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   :root{
     --bg:#0f1420; --panel:#1a2234; --panel2:#232d44; --line:#2e3a55;
@@ -65,6 +67,15 @@
   .hidden{display:none!important}
   a{color:var(--acc)}
   .link{color:var(--acc);text-decoration:underline;cursor:pointer}
+  .vsw{display:flex;gap:6px;margin-bottom:10px}
+  .vsw button{flex:1;padding:9px;font-size:14px}
+  .vsw button:not(.on){background:var(--panel2);color:var(--muted);border:1px solid var(--line)}
+  #map{height:66vh;min-height:340px;border-radius:14px;border:1px solid var(--line);overflow:hidden}
+  .leaflet-popup-content{margin:10px 12px;font:14px system-ui}
+  .leaflet-popup-content b{color:#111}
+  .llegar{display:inline-block;margin-top:6px;padding:6px 10px;border-radius:8px;
+          background:var(--acc);color:#fff;font-weight:600;font-size:12px;text-decoration:none}
+  .llegar.wz{background:#33ccff;color:#083}
 </style>
 </head>
 <body>
@@ -109,6 +120,12 @@
       <div id="zonasBox" style="margin-top:12px"></div>
     </div>
 
+    <!-- switch de vista -->
+    <div class="vsw">
+      <button id="vLista" class="on" onclick="setView('lista')">📋 Lista</button>
+      <button id="vMapa" onclick="setView('mapa')">🗺️ Mapa</button>
+    </div>
+
     <!-- selector de grado -->
     <div class="tabs" id="tabs">
       <button data-g="" class="on" onclick="setGrado('')">Todos</button>
@@ -122,7 +139,19 @@
       <button class="sec" id="btnPend" onclick="togglePend()">Pendientes hoy</button>
     </div>
     <div id="zonaSelWrap" class="hidden" style="margin-bottom:10px">
-      <select id="zonaSel" onchange="cargarClientes()"></select>
+      <select id="zonaSel" onchange="refrescar()"></select>
+    </div>
+
+    <!-- MAPA -->
+    <div id="mapWrap" class="hidden">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <div id="mapInfo" class="muted" style="font-size:12px"></div>
+        <button id="btnGeo" class="sec hidden" style="font-size:13px;padding:8px 12px" onclick="geocodificar()">📍 Ubicar por dirección</button>
+      </div>
+      <div id="map"></div>
+      <div class="muted" style="font-size:11px;margin-top:6px">
+        🟢 Vigente · 🟠 Vencida · 🔴 Mora · Toca un punto para ver al cliente y cómo llegar.
+      </div>
     </div>
 
     <div id="lista"></div>
@@ -228,12 +257,13 @@ async function cargarZonas(){
       </div>`).join('');
   }catch(e){}
 }
-function verZona(z){document.getElementById('zonaSel').value=z;cargarClientes();
+function verZona(z){document.getElementById('zonaSel').value=z;refrescar();
   window.scrollTo({top:document.getElementById('tabs').offsetTop-60,behavior:'smooth'});}
 
 /* -------- CLIENTES -------- */
+function refrescar(){ if(VIEW==='mapa') cargarMapa(); else cargarClientes(); }
 function setGrado(g){GRADO=g;[...document.querySelectorAll('#tabs button')].forEach(b=>
-  b.classList.toggle('on',b.dataset.g===g));cargarClientes();}
+  b.classList.toggle('on',b.dataset.g===g));refrescar();}
 let _bt;function buscarDeb(){clearTimeout(_bt);_bt=setTimeout(()=>{BUSCAR=document.getElementById('buscar').value.trim();cargarClientes();},300);}
 function togglePend(){PEND=!PEND;document.getElementById('btnPend').classList.toggle('on',PEND);
   document.getElementById('btnPend').style.background=PEND?'var(--acc)':'';cargarClientes();}
@@ -295,7 +325,8 @@ async function abrirCliente(contrato){
         <div class="row" style="justify-content:space-between"><span class="muted">Atraso</span><b>$${fmt(c.atraso)} (${c.sem_atraso||0} sem)</b></div>
         <div class="row" style="justify-content:space-between"><span class="muted">Liquidación</span><b>$${fmt(c.liquidacion)}</b></div>
         <div style="margin-top:8px">${c.domicilio||''}</div>
-        <div class="meta" style="margin-top:6px">${tels.length?tels.map(t=>`<a href="tel:${t}">📞 ${t}</a>`).join(' · '):'sin teléfono'}</div>
+        <div style="margin-top:6px">${linksLlegar(c.lat,c.lng,c.domicilio)}</div>
+        <div class="meta" style="margin-top:8px">${tels.length?tels.map(t=>`<a href="tel:${t}">📞 ${t}</a>`).join(' · '):'sin teléfono'}</div>
         ${c.aval?`<div class="meta muted" style="margin-top:6px">Aval: ${c.aval} — ${c.dom_aval||''}</div>`:''}
       </div>
 
@@ -391,6 +422,91 @@ async function guardarGestion(){
     toast('Gestión guardada ✓');cerrar('mCli');
     cargarResumen();cargarClientes();if(ME.rol==='super')cargarZonas();
   }catch(e){toast(e.message);}
+}
+
+/* -------- COMO LLEGAR -------- */
+function linksLlegar(lat,lng,dir){
+  let g,w,nota='';
+  if(lat!=null&&lng!=null){
+    g=`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+    w=`https://waze.com/ul?ll=${lat},${lng}&navigate=yes`;
+  }else if(dir){
+    const q=encodeURIComponent(dir);
+    g=`https://www.google.com/maps/dir/?api=1&destination=${q}`;
+    w=`https://waze.com/ul?q=${q}&navigate=yes`;
+    nota=' <span class="muted" style="font-size:11px">(por dirección)</span>';
+  }else return '<span class="muted" style="font-size:12px">sin ubicación ni dirección</span>';
+  return `<a class="llegar" href="${g}" target="_blank">🧭 Google Maps</a>
+          <a class="llegar wz" href="${w}" target="_blank" style="margin-left:6px">Waze</a>${nota}`;
+}
+
+/* -------- VISTA LISTA / MAPA -------- */
+let VIEW='lista', MAP=null, CAPA=null;
+function setView(v){
+  VIEW=v;
+  document.getElementById('vLista').classList.toggle('on',v==='lista');
+  document.getElementById('vMapa').classList.toggle('on',v==='mapa');
+  const mapa=v==='mapa';
+  document.getElementById('mapWrap').classList.toggle('hidden',!mapa);
+  document.getElementById('lista').classList.toggle('hidden',mapa);
+  document.getElementById('listaMsg').classList.toggle('hidden',mapa);
+  // buscar/pendientes solo aplican a lista
+  document.querySelector('#buscar').closest('.row').classList.toggle('hidden',mapa);
+  document.getElementById('btnGeo').classList.toggle('hidden',!(mapa && ME.rol==='super'));
+  if(mapa) cargarMapa(); else cargarClientes();
+}
+function initMap(){
+  if(MAP) return;
+  MAP=L.map('map',{zoomControl:true}).setView([18.8125,-98.9538],13); // Cuautla, Morelos
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {maxZoom:19,attribution:'© OpenStreetMap'}).addTo(MAP);
+  CAPA=L.layerGroup().addTo(MAP);
+}
+const COLOR={Vigente:'#22c55e',Vencida:'#f59e0b',Mora:'#ef4444'};
+async function cargarMapa(){
+  initMap();
+  document.getElementById('mapInfo').textContent='Cargando mapa…';
+  const p=new URLSearchParams();
+  if(GRADO)p.set('grado',GRADO);
+  if(ME.rol==='super'){const z=document.getElementById('zonaSel').value;if(z)p.set('zona',z);}
+  try{
+    const d=await api('/api/mapa?'+p.toString());
+    CAPA.clearLayers();
+    const bounds=[];
+    d.puntos.forEach(c=>{
+      const m=L.circleMarker([c.lat,c.lng],{radius:7,weight:2,color:'#fff',
+        fillColor:COLOR[c.grado]||'#888',fillOpacity:.9});
+      const tels='';
+      m.bindPopup(`<b>${c.nombre||''}</b><br>
+        <span style="color:${COLOR[c.grado]}">${c.grado}</span> · Saldo $${fmt(c.saldo)}<br>
+        <small>${c.domicilio||''}</small><br>
+        ${c.geo_fuente==='geocode'?'<small style="color:#a60">ubicación aprox. por dirección</small><br>':''}
+        ${linksLlegar(c.lat,c.lng,c.domicilio)}
+        <br><span class="link" onclick="abrirCliente('${c.contrato}')">ver / gestionar</span>`);
+      m.addTo(CAPA); bounds.push([c.lat,c.lng]);
+    });
+    if(bounds.length) MAP.fitBounds(bounds,{padding:[30,30],maxZoom:15});
+    setTimeout(()=>MAP.invalidateSize(),200);
+    document.getElementById('mapInfo').textContent=
+      `${d.puntos.length} clientes ubicados`+(d.sin_ubicacion?` · ${d.sin_ubicacion} sin ubicación`:'');
+  }catch(e){document.getElementById('mapInfo').textContent=e.message;}
+}
+async function geocodificar(){
+  const b=document.getElementById('btnGeo');b.disabled=true;
+  const info=document.getElementById('mapInfo');
+  try{
+    let faltan=1;
+    while(faltan>0){
+      info.textContent='Ubicando por dirección… (respeta 1/seg, puede tardar)';
+      const r=await api('/api/geocodificar',{method:'POST',body:JSON.stringify({lote:25})});
+      faltan=r.faltan;
+      info.textContent=`Ubicados +${r.ubicados} · faltan ${r.faltan}`;
+      await cargarMapa();
+      if(r.procesados===0) break;
+    }
+    toast('Geocodificación terminada');
+  }catch(e){toast(e.message);}
+  finally{b.disabled=false;cargarMapa();}
 }
 
 /* -------- IMPORTAR / EXPORTAR (super) -------- */
