@@ -491,22 +491,40 @@ async function cargarMapa(){
       `${d.puntos.length} clientes ubicados`+(d.sin_ubicacion?` · ${d.sin_ubicacion} sin ubicación`:'');
   }catch(e){document.getElementById('mapInfo').textContent=e.message;}
 }
+let GEO_POLL=null, GEO_ON=false;
 async function geocodificar(){
-  const b=document.getElementById('btnGeo');b.disabled=true;
-  const info=document.getElementById('mapInfo');
+  const b=document.getElementById('btnGeo');
+  if(GEO_ON){ // segundo clic = detener
+    try{await api('/api/geo/detener',{method:'POST'});}catch(e){}
+    pararGeoPoll(); return;
+  }
   try{
-    let faltan=1;
-    while(faltan>0){
-      info.textContent='Ubicando por dirección… (respeta 1/seg, puede tardar)';
-      const r=await api('/api/geocodificar',{method:'POST',body:JSON.stringify({lote:25})});
-      faltan=r.faltan;
-      info.textContent=`Ubicados +${r.ubicados} · faltan ${r.faltan}`;
-      await cargarMapa();
-      if(r.procesados===0) break;
-    }
-    toast('Geocodificación terminada');
+    await api('/api/geo/iniciar',{method:'POST'});
+    GEO_ON=true; b.textContent='■ Detener';
+    let tick=0;
+    GEO_POLL=setInterval(async()=>{
+      try{
+        const s=await api('/api/geo/estado');
+        const info=document.getElementById('mapInfo');
+        if(s.corriendo){
+          info.textContent=`Ubicando… ${s.colHechas}/${s.colonias} colonias · ${s.ubicados} clientes ubicados`;
+        }else{
+          const fin={terminado:'Listo',pausado_limite:'Pausado (límite del servicio, reintenta luego)',
+                     detenido:'Detenido',error:'Error'}[s.fase]||'';
+          info.textContent=`${fin} · ${s.con_ubicacion} ubicados`+(s.sin_ubicacion?` · ${s.sin_ubicacion} sin ubicación`:'');
+          if(s.error)toast(s.error);
+          pararGeoPoll();
+        }
+        if(++tick%4===0) cargarMapa(); // refresca el mapa cada ~12s
+      }catch(e){pararGeoPoll();}
+    },3000);
   }catch(e){toast(e.message);}
-  finally{b.disabled=false;cargarMapa();}
+}
+function pararGeoPoll(){
+  GEO_ON=false;
+  if(GEO_POLL){clearInterval(GEO_POLL);GEO_POLL=null;}
+  document.getElementById('btnGeo').textContent='📍 Ubicar por dirección';
+  cargarMapa();
 }
 
 /* -------- IMPORTAR / EXPORTAR (super) -------- */
