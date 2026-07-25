@@ -449,80 +449,83 @@ app.get('/api/mapa', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Extrae la colonia del domicilio: "CALLE #x, Int:y, COLONIA, Cuautla, MORELOS" -> "COLONIA"
-function coloniaDe(dom) {
+// Parte el domicilio: "CALLE #x, Int:y, COLONIA, MUNICIPIO, ESTADO" -> {colonia, municipio, estado}
+function parseDom(dom) {
   if (!dom) return null;
-  const parts = String(dom).split(',').map(s => s.trim()).filter(Boolean);
-  const i = parts.findIndex(p => /cuautla/i.test(p));
-  let col = i > 0 ? parts[i - 1] : (parts.length >= 3 ? parts[parts.length - 3] : null);
-  if (!col) return null;
-  return col.replace(/#\s*S\/?N/ig, '').replace(/Int:\s*[^,]*/ig, '').replace(/\s{2,}/g, ' ').trim() || null;
+  const p = String(dom).split(',').map(s => s.trim()).filter(Boolean);
+  if (p.length < 2) return null;
+  const estado = p[p.length - 1];
+  const municipio = p[p.length - 2];
+  let colonia = p.length >= 3 ? p[p.length - 3] : null;
+  if (colonia) colonia = colonia.replace(/#\s*S\/?N/ig, '').replace(/Int:\s*[^,]*/ig, '').replace(/\s{2,}/g, ' ').trim() || null;
+  return { colonia, municipio, estado };
 }
-// Limites generosos alrededor de Cuautla/Morelos para descartar coincidencias basura (CDMX, etc.)
-const GEO_BOX = { latMin: 18.0, latMax: 19.5, lngMin: -99.5, lngMax: -98.0 };
+// Caja generosa: Morelos + sur de Edomex + orilla de Puebla/Tlaxcala. Fuera de aqui = mala coincidencia.
+const GEO_BOX = { latMin: 17.8, latMax: 19.8, lngMin: -99.8, lngMax: -97.6 };
 function dentroDeCaja(lat, lng) {
   return lat >= GEO_BOX.latMin && lat <= GEO_BOX.latMax && lng >= GEO_BOX.lngMin && lng <= GEO_BOX.lngMax;
 }
-// Geocodifica una colonia probando de lo especifico a lo general. Devuelve {lat,lng} o null.
-async function geocodColonia(colonia) {
-  const intentos = [
-    `${colonia}, Cuautla, Morelos, Mexico`,
-    `${colonia}, Morelos, Mexico`,
-  ];
-  for (const query of intentos) {
-    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=mx&q='
-      + encodeURIComponent(query);
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 6000);
-    try {
-      const r = await fetch(url, { headers: { 'User-Agent': 'GestionCuautla/1.0 (cobranza interna)' }, signal: ctrl.signal });
-      if (r.status === 429 || r.status === 403) { clearTimeout(to); const e = new Error('limite'); e.limite = true; throw e; }
-      if (r.ok) {
-        const j = await r.json();
-        if (Array.isArray(j) && j.length) {
-          const lat = +parseFloat(j[0].lat).toFixed(6), lng = +parseFloat(j[0].lon).toFixed(6);
-          if (dentroDeCaja(lat, lng)) { clearTimeout(to); return { lat, lng }; }
-        }
-      }
-    } catch (e) { if (e.limite) { clearTimeout(to); throw e; } }
-    finally { clearTimeout(to); }
-    await new Promise(t => setTimeout(t, 1100)); // 1/seg entre peticiones (politica Nominatim)
+// viewbox para sesgar Nominatim hacia la region (no estricto): izq,arriba,der,abajo
+const VIEWBOX = `${GEO_BOX.lngMin},${GEO_BOX.latMax},${GEO_BOX.lngMax},${GEO_BOX.latMin}`;
+async function nominatim(query) {
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=mx'
+    + '&viewbox=' + encodeURIComponent(VIEWBOX) + '&q=' + encodeURIComponent(query);
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const r = await fetch(url, { headers: { 'User-Agent': 'GestionCuautla/1.0 (cobranza interna)' }, signal: ctrl.signal });
+    if (r.status === 429 || r.status === 403) { const e = new Error('limite'); e.limite = true; throw e; }
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j) || !j.length) return null;
+    const lat = +parseFloat(j[0].lat).toFixed(6), lng = +parseFloat(j[0].lon).toFixed(6);
+    return dentroDeCaja(lat, lng) ? { lat, lng } : null;
+  } finally { clearTimeout(to); }
+}
+// Geocodifica una direccion: intenta colonia+municipio+estado; si falla, cae a municipio+estado.
+async function geocodDir(d) {
+  const est = d.estado || 'Morelos';
+  const intentos = [];
+  if (d.colonia) intentos.push(`${d.colonia}, ${d.municipio}, ${est}, Mexico`);
+  intentos.push(`${d.municipio}, ${est}, Mexico`); // respaldo: al menos el municipio correcto
+  for (let i = 0; i < intentos.length; i++) {
+    const r = await nominatim(intentos[i]); // puede lanzar {limite}
+    if (r) return { ...r, nivel: (d.colonia && i === 0) ? 'colonia' : 'municipio' };
+    await new Promise(t => setTimeout(t, 1100)); // 1/seg
   }
   return null;
 }
 function jitter(v) { return +(v + (Math.random() - 0.5) * 0.0016).toFixed(6); } // ~±90 m
 
-// Estado del proceso de geocodificado (en memoria; el avance real vive en geo_cache).
+// Estado del proceso (en memoria; el avance real vive en geo_cache).
 const GEO = { corriendo: false, fase: 'inactivo', total: 0, hechos: 0, ubicados: 0, colonias: 0, colHechas: 0, error: null };
 
 async function correrGeo() {
   if (GEO.corriendo) return;
   GEO.corriendo = true; GEO.fase = 'preparando'; GEO.error = null; GEO.hechos = 0; GEO.ubicados = 0;
   try {
-    // Colonias pendientes (clientes activos sin ubicacion, que no sean 'gps')
     const cli = await q(`
       SELECT contrato, domicilio FROM clientes
       WHERE activo=true AND lat IS NULL AND (geo_fuente IS DISTINCT FROM 'gps') AND domicilio IS NOT NULL`);
-    const porColonia = new Map();
+    // Agrupa por lugar (colonia|municipio|estado) para geocodificar una sola vez cada uno.
+    const porLugar = new Map();
     for (const c of cli.rows) {
-      const col = coloniaDe(c.domicilio);
-      if (!col) continue;
-      const k = col.toUpperCase();
-      if (!porColonia.has(k)) porColonia.set(k, { colonia: col, contratos: [] });
-      porColonia.get(k).contratos.push(c.contrato);
+      const d = parseDom(c.domicilio);
+      if (!d) continue;
+      const k = `${(d.colonia || '').toUpperCase()}|${(d.municipio || '').toUpperCase()}|${(d.estado || '').toUpperCase()}`;
+      if (!porLugar.has(k)) porLugar.set(k, { d, contratos: [] });
+      porLugar.get(k).contratos.push(c.contrato);
     }
-    GEO.total = cli.rows.length; GEO.colonias = porColonia.size; GEO.colHechas = 0; GEO.fase = 'ubicando';
+    GEO.total = cli.rows.length; GEO.colonias = porLugar.size; GEO.colHechas = 0; GEO.fase = 'ubicando';
 
-    for (const [k, v] of porColonia) {
+    for (const [k, v] of porLugar) {
       if (!GEO.corriendo) { GEO.fase = 'detenido'; break; }
-      // cache?
       let coord = null;
       const cach = await q('SELECT lat,lng FROM geo_cache WHERE clave=$1', [k]);
-      if (cach.rowCount && cach.rows[0].lat != null) coord = cach.rows[0];
-      else if (cach.rowCount && cach.rows[0].lat == null) coord = null; // ya intentada sin exito
+      if (cach.rowCount) coord = (cach.rows[0].lat != null) ? cach.rows[0] : null;
       else {
         try {
-          coord = await geocodColonia(v.colonia);
+          coord = await geocodDir(v.d);
           await q(`INSERT INTO geo_cache(clave,lat,lng) VALUES($1,$2,$3)
                    ON CONFLICT(clave) DO UPDATE SET lat=EXCLUDED.lat,lng=EXCLUDED.lng`,
             [k, coord ? coord.lat : null, coord ? coord.lng : null]);
@@ -531,7 +534,6 @@ async function correrGeo() {
           coord = null;
         }
       }
-      // asignar a los clientes de la colonia (con jitter para que no se encimen)
       if (coord) {
         for (const contrato of v.contratos) {
           await q(`UPDATE clientes SET lat=$1,lng=$2,geo_fuente='geocode'
