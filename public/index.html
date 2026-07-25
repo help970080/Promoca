@@ -527,7 +527,7 @@ async function geocodificar(){
         const s=await api('/api/geo/estado');
         const info=document.getElementById('mapInfo');
         if(s.corriendo){
-          info.textContent=`Ubicando… ${s.colHechas}/${s.colonias} colonias · ${s.ubicados} clientes ubicados`;
+          info.textContent=`Ubicando… ${s.colHechas}/${s.colonias} municipios · ${s.ubicados} clientes ubicados`;
         }else{
           const fin={terminado:'Listo',pausado_limite:'Pausado (límite del servicio, reintenta luego)',
                      detenido:'Detenido',error:'Error'}[s.fase]||'';
