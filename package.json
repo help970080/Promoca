@@ -1,0 +1,20 @@
+{
+  "name": "cuautla-gestion",
+  "version": "1.0.0",
+  "description": "Gestion de cobranza por zona - region CUAUTLA",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.11.5",
+    "xlsx": "^0.18.5"
+  }
+}
