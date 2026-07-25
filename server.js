@@ -450,55 +450,59 @@ app.get('/api/mapa', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Parte el domicilio: "CALLE #x, Int:y, COLONIA, MUNICIPIO, ESTADO" -> {colonia, municipio, estado}
-function parseDom(dom) {
+// Municipio + estado del domicilio: "..., MUNICIPIO, ESTADO"
+function lugarDe(dom) {
   if (!dom) return null;
   const p = String(dom).split(',').map(s => s.trim()).filter(Boolean);
   if (p.length < 2) return null;
-  const estado = p[p.length - 1];
-  const municipio = p[p.length - 2];
-  let colonia = p.length >= 3 ? p[p.length - 3] : null;
-  if (colonia) colonia = colonia.replace(/#\s*S\/?N/ig, '').replace(/Int:\s*[^,]*/ig, '').replace(/\s{2,}/g, ' ').trim() || null;
-  return { colonia, municipio, estado };
+  return { municipio: p[p.length - 2], estado: p[p.length - 1] };
 }
-// Caja generosa: Morelos + sur de Edomex + orilla de Puebla/Tlaxcala. Fuera de aqui = mala coincidencia.
+// Caja generosa: Morelos + sur de Edomex + orilla de Puebla/Tlaxcala. Fuera = mala coincidencia.
 const GEO_BOX = { latMin: 17.8, latMax: 19.8, lngMin: -99.8, lngMax: -97.6 };
 function dentroDeCaja(lat, lng) {
   return lat >= GEO_BOX.latMin && lat <= GEO_BOX.latMax && lng >= GEO_BOX.lngMin && lng <= GEO_BOX.lngMax;
 }
-// viewbox para sesgar Nominatim hacia la region (no estricto): izq,arriba,der,abajo
 const VIEWBOX = `${GEO_BOX.lngMin},${GEO_BOX.latMax},${GEO_BOX.lngMax},${GEO_BOX.latMin}`;
-async function nominatim(query) {
-  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=mx'
-    + '&viewbox=' + encodeURIComponent(VIEWBOX) + '&q=' + encodeURIComponent(query);
+const BBOX = `${GEO_BOX.lngMin},${GEO_BOX.latMin},${GEO_BOX.lngMax},${GEO_BOX.latMax}`;
+
+async function pedir(url) {
   const ctrl = new AbortController();
-  const to = setTimeout(() => ctrl.abort(), 6000);
-  try {
-    const r = await fetch(url, { headers: { 'User-Agent': 'GestionCuautla/1.0 (cobranza interna)' }, signal: ctrl.signal });
-    if (r.status === 429 || r.status === 403) { const e = new Error('limite'); e.limite = true; throw e; }
-    if (!r.ok) return null;
-    const j = await r.json();
-    if (!Array.isArray(j) || !j.length) return null;
-    const lat = +parseFloat(j[0].lat).toFixed(6), lng = +parseFloat(j[0].lon).toFixed(6);
-    return dentroDeCaja(lat, lng) ? { lat, lng } : null;
-  } finally { clearTimeout(to); }
+  const to = setTimeout(() => ctrl.abort(), 7000);
+  try { return await fetch(url, { headers: { 'User-Agent': 'GestionCuautla/1.0 (cobranza interna)' }, signal: ctrl.signal }); }
+  finally { clearTimeout(to); }
 }
-// Geocodifica una direccion: intenta colonia+municipio+estado; si falla, cae a municipio+estado.
-async function geocodDir(d) {
-  const est = d.estado || 'Morelos';
-  const intentos = [];
-  if (d.colonia) intentos.push(`${d.colonia}, ${d.municipio}, ${est}, Mexico`);
-  intentos.push(`${d.municipio}, ${est}, Mexico`); // respaldo: al menos el municipio correcto
-  for (let i = 0; i < intentos.length; i++) {
-    const r = await nominatim(intentos[i]); // puede lanzar {limite}
-    if (r) return { ...r, nivel: (d.colonia && i === 0) ? 'colonia' : 'municipio' };
-    await new Promise(t => setTimeout(t, 1100)); // 1/seg
-  }
+async function viaNominatim(query) {
+  const r = await pedir('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=mx'
+    + '&viewbox=' + encodeURIComponent(VIEWBOX) + '&q=' + encodeURIComponent(query));
+  if (r.status === 429 || r.status === 403) { const e = new Error('limite'); e.limite = true; throw e; }
+  if (!r.ok) return null;
+  const j = await r.json();
+  if (!Array.isArray(j) || !j.length) return null;
+  return { lat: +parseFloat(j[0].lat).toFixed(6), lng: +parseFloat(j[0].lon).toFixed(6) };
+}
+async function viaPhoton(query) {
+  const r = await pedir('https://photon.komoot.io/api/?limit=1&bbox=' + encodeURIComponent(BBOX)
+    + '&q=' + encodeURIComponent(query));
+  if (!r.ok) return null;
+  const j = await r.json();
+  const f = j && j.features && j.features[0];
+  if (!f || !f.geometry) return null;
+  const [lng, lat] = f.geometry.coordinates;
+  return { lat: +Number(lat).toFixed(6), lng: +Number(lng).toFixed(6) };
+}
+// Intenta Nominatim; si bloquea o no encuentra, cae a Photon. Devuelve {lat,lng} o null.
+async function geocodeLugar(query) {
+  let coord = null, limite = false;
+  try { coord = await viaNominatim(query); } catch (e) { if (e.limite) limite = true; else throw e; }
+  if (coord && dentroDeCaja(coord.lat, coord.lng)) return coord;
+  // respaldo Photon (otra fuente OSM, mas tolerante)
+  try { coord = await viaPhoton(query); } catch { coord = null; }
+  if (coord && dentroDeCaja(coord.lat, coord.lng)) return coord;
+  if (limite && !coord) { const e = new Error('limite'); e.limite = true; throw e; }
   return null;
 }
-function jitter(v) { return +(v + (Math.random() - 0.5) * 0.0016).toFixed(6); } // ~±90 m
+function jitter(v, spread) { return +(v + (Math.random() - 0.5) * (spread || 0.012)).toFixed(6); } // ~±650 m
 
-// Estado del proceso (en memoria; el avance real vive en geo_cache).
 const GEO = { corriendo: false, fase: 'inactivo', total: 0, hechos: 0, ubicados: 0, colonias: 0, colHechas: 0, error: null };
 
 async function correrGeo() {
@@ -508,13 +512,13 @@ async function correrGeo() {
     const cli = await q(`
       SELECT contrato, domicilio FROM clientes
       WHERE activo=true AND lat IS NULL AND (geo_fuente IS DISTINCT FROM 'gps') AND domicilio IS NOT NULL`);
-    // Agrupa por lugar (colonia|municipio|estado) para geocodificar una sola vez cada uno.
+    // Agrupa por MUNICIPIO (pocas consultas, siempre resuelven -> no dispara el limite).
     const porLugar = new Map();
     for (const c of cli.rows) {
-      const d = parseDom(c.domicilio);
-      if (!d) continue;
-      const k = `${(d.colonia || '').toUpperCase()}|${(d.municipio || '').toUpperCase()}|${(d.estado || '').toUpperCase()}`;
-      if (!porLugar.has(k)) porLugar.set(k, { d, contratos: [] });
+      const l = lugarDe(c.domicilio);
+      if (!l) continue;
+      const k = `${l.municipio.toUpperCase()}|${l.estado.toUpperCase()}`;
+      if (!porLugar.has(k)) porLugar.set(k, { l, contratos: [] });
       porLugar.get(k).contratos.push(c.contrato);
     }
     GEO.total = cli.rows.length; GEO.colonias = porLugar.size; GEO.colHechas = 0; GEO.fase = 'ubicando';
@@ -526,14 +530,15 @@ async function correrGeo() {
       if (cach.rowCount) coord = (cach.rows[0].lat != null) ? cach.rows[0] : null;
       else {
         try {
-          coord = await geocodDir(v.d);
+          coord = await geocodeLugar(`${v.l.municipio}, ${v.l.estado}, Mexico`);
           await q(`INSERT INTO geo_cache(clave,lat,lng) VALUES($1,$2,$3)
                    ON CONFLICT(clave) DO UPDATE SET lat=EXCLUDED.lat,lng=EXCLUDED.lng`,
             [k, coord ? coord.lat : null, coord ? coord.lng : null]);
         } catch (e) {
-          if (e.limite) { GEO.fase = 'pausado_limite'; GEO.error = 'El servicio de mapas limitó las consultas. Reintenta en unos minutos.'; break; }
+          if (e.limite) { GEO.fase = 'pausado_limite'; GEO.error = 'El servicio de mapas limitó las consultas. Reintenta en unos minutos (ya guardé lo avanzado).'; break; }
           coord = null;
         }
+        await new Promise(t => setTimeout(t, 1200)); // 1/seg de margen entre municipios
       }
       if (coord) {
         for (const contrato of v.contratos) {
